@@ -362,8 +362,24 @@ func (co *ChartOption) Run(ctx context.Context, setters ...Option) (ChartData, e
 					}
 				}
 
-				// find images and validate according to values
-				imageMap := findImageReferences(chart.Values, values, co.UseCustomValues)
+				// render helm template to get actual manifests and extract images
+				var imageMap map[*image.Image][]string
+				releaseName := fmt.Sprintf("helmper-%s", c.Name)
+				namespace := "default"
+				manifest, err := renderHelmTemplate(chart, values, co.Settings, releaseName, namespace, args.K8SVersion)
+				if err != nil {
+					slog.Info("failed to render helm template, falling back to values parsing", slog.String("chart", c.Name), slog.String("error", err.Error()))
+					// Fallback to original method if template rendering fails
+					imageMap = findImageReferences(chart.Values, values, co.UseCustomValues)
+				} else {
+					// Use template-based image extraction
+					imageMap, err = findImageReferencesFromManifest(manifest)
+					if err != nil {
+						slog.Info("failed to extract images from manifest, falling back to values parsing", slog.String("chart", c.Name), slog.String("error", err.Error()))
+						// Fallback to original method
+						imageMap = findImageReferences(chart.Values, values, co.UseCustomValues)
+					}
+				}
 
 				// check that images are available from registries
 				if imageMap == nil {

@@ -2,13 +2,18 @@ package helm
 
 import (
 	"fmt"
-
+	"log"
 	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/ChristofferNissen/helmper/pkg/image"
 	"github.com/ChristofferNissen/helmper/pkg/util/ternary"
 	"github.com/distribution/reference"
+	"gopkg.in/yaml.v3"
+	"helm.sh/helm/v3/pkg/action"
+	"helm.sh/helm/v3/pkg/chart"
+	"helm.sh/helm/v3/pkg/chartutil"
+	"helm.sh/helm/v3/pkg/cli"
 )
 
 // traverse helm chart values to determine if condition is met
@@ -229,4 +234,106 @@ func replaceImageReferences(data map[string]any, reg string, prefixSource bool) 
 			replaceImageReferences(data[k].(map[string]any), reg, prefixSource)
 		}
 	}
+}
+
+// renderHelmTemplate renders a helm chart using helm template action and returns the manifests
+func renderHelmTemplate(chartRef *chart.Chart, values map[string]any, settings *cli.EnvSettings, releaseName string, namespace string, kubeVersion string) (string, error) {
+	actionConfig := new(action.Configuration)
+	if err := actionConfig.Init(settings.RESTClientGetter(), namespace, "memory", log.Printf); err != nil {
+		return "", fmt.Errorf("failed to initialize action configuration: %w", err)
+	}
+
+	install := action.NewInstall(actionConfig)
+	install.DryRun = true
+	install.ReleaseName = releaseName
+	install.Namespace = namespace
+	install.Replace = true
+	install.ClientOnly = true
+	install.KubeVersion = &chartutil.KubeVersion{Version: kubeVersion}
+
+	// Render the chart with the provided values
+	release, err := install.Run(chartRef, values)
+	if err != nil {
+		return "", fmt.Errorf("failed to render helm template: %w", err)
+	}
+
+	return release.Manifest, nil
+}
+
+// findImageReferencesFromManifest extracts image references from rendered Kubernetes manifests
+func findImageReferencesFromManifest(manifest string) (map[*image.Image][]string, error) {
+	result := make(map[*image.Image][]string)
+
+	// Split manifest into individual documents
+	documents := strings.Split(manifest, "---")
+
+	for _, doc := range documents {
+		doc = strings.TrimSpace(doc)
+		if doc == "" {
+			continue
+		}
+
+		// Parse the YAML document
+		var k8sResource map[string]interface{}
+		if err := yaml.Unmarshal([]byte(doc), &k8sResource); err != nil {
+			continue // Skip invalid YAML
+		}
+
+		// Extract images from this document
+		images := extractImagesFromResource(k8sResource)
+		for _, imgStr := range images {
+			img, err := image.RefToImage(imgStr)
+			if err != nil {
+				continue // Skip invalid image references
+			}
+
+			// Generate a path based on the resource type and name
+			path := generateResourcePath(k8sResource, imgStr)
+			result[&img] = append(result[&img], path)
+		}
+	}
+
+	return result, nil
+}
+
+// extractImagesFromResource recursively extracts image references from a Kubernetes resource
+func extractImagesFromResource(resource interface{}) []string {
+	var images []string
+
+	switch v := resource.(type) {
+	case map[string]interface{}:
+		for key, value := range v {
+			if key == "image" {
+				if imgStr, ok := value.(string); ok && imgStr != "" {
+					images = append(images, imgStr)
+				}
+			} else {
+				images = append(images, extractImagesFromResource(value)...)
+			}
+		}
+	case []interface{}:
+		for _, item := range v {
+			images = append(images, extractImagesFromResource(item)...)
+		}
+	}
+
+	return images
+}
+
+// generateResourcePath creates a descriptive path for the image reference
+func generateResourcePath(resource map[string]interface{}, imageRef string) string {
+	kind := "unknown"
+	name := "unknown"
+
+	if k, ok := resource["kind"].(string); ok {
+		kind = k
+	}
+
+	if metadata, ok := resource["metadata"].(map[string]interface{}); ok {
+		if n, ok := metadata["name"].(string); ok {
+			name = n
+		}
+	}
+
+	return fmt.Sprintf("%s/%s/image=%s", kind, name, imageRef)
 }
