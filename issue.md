@@ -127,7 +127,19 @@ This pattern affects all Kyverno components (admission-controller, background-co
 
 ## Proposed Solution
 
-Replace the static values parsing with actual Helm template rendering to extract images from the manifests that would be deployed.
+Replace the static values parsing with actual Helm template rendering to extract images from the manifests that would be deployed. Include robust fallback handling for charts that cannot be successfully rendered.
+
+### Implementation Strategy
+
+The solution uses a **two-tier approach**:
+
+1. **Primary**: Attempt Helm template rendering with `action.NewInstall()` 
+2. **Fallback**: Use original values parsing if template rendering fails
+
+This ensures:
+- ✅ **Maximum accuracy** for charts like Kyverno that use `defaultRegistry` patterns
+- ✅ **Zero regression** for charts with complex template dependencies
+- ✅ **Backward compatibility** with existing functionality
 
 ### Implementation Details
 
@@ -246,6 +258,28 @@ import (
 2. **Compatibility**: Works with any chart that uses template logic for image references
 3. **Backward Compatibility**: Falls back to original method if template rendering fails
 4. **Robustness**: Handles complex chart transformations and conditional logic
+
+### Limitations and Considerations
+
+The template rendering approach may fail for charts with complex dependencies or incomplete context during dry-run execution. Common scenarios include:
+
+1. **Complex Template Functions**: Charts using advanced template functions like `tpl` with dynamic content
+2. **Missing Dependencies**: Charts requiring external dependencies or specific cluster state
+3. **Conditional Logic Errors**: Templates with complex conditionals that fail without full context
+
+**Example Failure (Loki chart)**:
+```
+{"level":"INFO","msg":"failed to render helm template, falling back to values parsing","chart":"loki","error":"failed to render helm template: template: loki/templates/write/statefulset-write.yaml:50:28: executing \"loki/templates/write/statefulset-write.yaml\" at <include \"loki.configMapOrSecretContentHash\"..."}
+```
+
+**Mitigation**: The implementation includes robust fallback to the original values parsing method, ensuring no regression in functionality while improving accuracy for compatible charts.
+
+### Success Rate Analysis
+
+- ✅ **Kyverno**: Template rendering succeeds, correctly extracts `reg.kyverno.io` images
+- ✅ **Simple charts**: Basic charts work with both methods
+- ⚠️ **Complex charts (Loki)**: Falls back gracefully to values parsing
+- ✅ **Overall improvement**: No functionality lost, accuracy gained where possible
 
 ## Validation
 
