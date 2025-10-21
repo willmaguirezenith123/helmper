@@ -156,8 +156,16 @@ func (i Image) Elements() (string, string, string, error) {
 			repository = strings.Join(parts[:2], "/")
 			name = strings.Join(parts[2:], "/")
 		} else {
-			repository = "library"
-			name = parts[0]
+			// Only use "library" default for Docker Hub registries
+			domain := reference.Domain(r)
+			if domain == "docker.io" || domain == "index.docker.io" || domain == "" {
+				repository = "library"
+				name = parts[0]
+			} else {
+				// For non-Docker registries, don't add library prefix
+				repository = ""
+				name = parts[0]
+			}
 		}
 		return reference.Domain(r), repository, name, nil
 	default:

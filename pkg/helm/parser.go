@@ -196,7 +196,7 @@ func replaceImageReferences(data map[string]any, reg string, prefixSource bool) 
 		if strings.Contains(val, dom) {
 			return strings.Replace(ref.String(), dom, reg, 1)
 		} else {
-			if strings.HasPrefix(ref.String(), "docker.io/library/") {
+			if strings.HasPrefix(ref.String(), "docker.io/library/") && strings.HasPrefix(val, "docker.io") {
 				return reg + "/library/" + val
 			}
 			return reg + "/" + val
