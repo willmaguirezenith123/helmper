@@ -2,7 +2,11 @@ package helm
 
 import (
 	"fmt"
+	"io/ioutil"
 	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
@@ -236,8 +240,74 @@ func replaceImageReferences(data map[string]any, reg string, prefixSource bool) 
 	}
 }
 
-// renderHelmTemplate renders a helm chart using helm template action and returns the manifests
+// renderHelmTemplate renders a helm chart using external helm template command to capture all hooks
 func renderHelmTemplate(chartRef *chart.Chart, values map[string]any, settings *cli.EnvSettings, releaseName string, namespace string, kubeVersion string) (string, error) {
+	// Try external helm template command first to capture all hooks
+	manifest, err := renderHelmTemplateExternal(chartRef, values, releaseName, namespace, kubeVersion)
+	if err == nil {
+		return manifest, nil
+	}
+
+	// Fallback to internal action if external command fails
+	return renderHelmTemplateInternal(chartRef, values, settings, releaseName, namespace, kubeVersion)
+}
+
+// renderHelmTemplateExternal uses external helm template command to capture all resources including hooks
+func renderHelmTemplateExternal(chartRef *chart.Chart, values map[string]any, releaseName string, namespace string, kubeVersion string) (string, error) {
+	// Create a temporary directory for the chart
+	tempDir, err := ioutil.TempDir("", "helmper-chart-")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Save chart to temp directory
+	chartPath := filepath.Join(tempDir, chartRef.Metadata.Name)
+	if err := chartutil.SaveDir(chartRef, tempDir); err != nil {
+		return "", fmt.Errorf("failed to save chart: %w", err)
+	}
+
+	// Create temporary values file if we have custom values
+	var valuesFile string
+	if len(values) > 0 {
+		valuesPath := filepath.Join(tempDir, "values.yaml")
+		valuesData, err := yaml.Marshal(values)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal values: %w", err)
+		}
+		if err := ioutil.WriteFile(valuesPath, valuesData, 0644); err != nil {
+			return "", fmt.Errorf("failed to write values file: %w", err)
+		}
+		valuesFile = valuesPath
+	}
+
+	// Build helm template command
+	args := []string{
+		"template",
+		releaseName,
+		chartPath,
+		"--namespace", namespace,
+		"--kube-version", kubeVersion,
+		"--include-crds",
+	}
+
+	// Add values file if present
+	if valuesFile != "" {
+		args = append(args, "--values", valuesFile)
+	}
+
+	// Execute helm template command
+	cmd := exec.Command("helm", args...)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("helm template command failed: %w", err)
+	}
+
+	return string(output), nil
+}
+
+// renderHelmTemplateInternal uses internal helm action as fallback
+func renderHelmTemplateInternal(chartRef *chart.Chart, values map[string]any, settings *cli.EnvSettings, releaseName string, namespace string, kubeVersion string) (string, error) {
 	actionConfig := new(action.Configuration)
 	if err := actionConfig.Init(settings.RESTClientGetter(), namespace, "memory", log.Printf); err != nil {
 		return "", fmt.Errorf("failed to initialize action configuration: %w", err)

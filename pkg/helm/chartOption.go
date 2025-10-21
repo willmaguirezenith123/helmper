@@ -366,6 +366,7 @@ func (co *ChartOption) Run(ctx context.Context, setters ...Option) (ChartData, e
 				var imageMap map[*image.Image][]string
 				releaseName := fmt.Sprintf("helmper-%s", c.Name)
 				namespace := "default"
+
 				manifest, err := renderHelmTemplate(chart, values, co.Settings, releaseName, namespace, args.K8SVersion)
 				if err != nil {
 					slog.Info("failed to render helm template, falling back to values parsing", slog.String("chart", c.Name), slog.String("error", err.Error()))
@@ -390,11 +391,15 @@ func (co *ChartOption) Run(ctx context.Context, setters ...Option) (ChartData, e
 				for i, helmValuePaths := range imageMap {
 					func(i *image.Image, helmValuePaths []string) {
 						eg.Go(func() error {
-							if i.IsEmpty() {
-								return nil
-							}
+							slog.Info("Processing image from chart",
+								slog.String("chart", c.Name),
+								slog.String("image", i.String()),
+								slog.Bool("isEmpty", i.IsEmpty()))
 
-							// shuffle data (ensure all fields are populated in i)
+							if i.IsEmpty() {
+								slog.Info("Skipping empty image", slog.String("image", i.String()))
+								return nil
+							} // shuffle data (ensure all fields are populated in i)
 							reg, repo, name, _ := i.Elements()
 							i.Registry = reg
 							i.Repository = fmt.Sprintf("%s/%s", repo, name)
