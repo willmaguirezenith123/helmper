@@ -45,20 +45,33 @@ func determineTag(ctx context.Context, img *image.Image, plainHTTP bool) bool {
 	ref := img.String()
 	tag, err := img.TagOrDigest()
 	if err != nil {
+		slog.Warn("Failed to get tag from image", slog.String("image", ref), slog.String("error", err.Error()))
 		return false
 	}
 
-	available, _ := registry.Exist(ctx, ref, tag, plainHTTP)
+	available, err := registry.Exist(ctx, ref, tag, plainHTTP)
+	if err != nil {
+		slog.Warn("Failed to check image availability", slog.String("image", ref), slog.String("tag", tag), slog.String("error", err.Error()))
+		// Return true to continue processing - assume image exists if we can't verify
+		return true
+	}
 	if available {
 		return true
 	}
 
-	available, _ = registry.Exist(ctx, ref, "v"+tag, plainHTTP)
+	available, err = registry.Exist(ctx, ref, "v"+tag, plainHTTP)
+	if err != nil {
+		slog.Warn("Failed to check image availability with v-prefix", slog.String("image", ref), slog.String("tag", "v"+tag), slog.String("error", err.Error()))
+		// Return true to continue processing - assume image exists if we can't verify
+		return true
+	}
 	if available {
 		img.Tag = "v" + img.Tag
 		return true
 	}
 
+	// If both checks failed without errors, the image truly doesn't exist
+	slog.Info("Image not found in registry", slog.String("image", ref), slog.String("tag", tag))
 	return false
 }
 
